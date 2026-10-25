@@ -2,6 +2,11 @@
 import argparse
 import json
 from pathlib import Path
+try:
+    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+except ImportError:
+    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+
 import subprocess
 import sys
 import time
@@ -11,7 +16,8 @@ p=argparse.ArgumentParser()
 p.add_argument('--models',nargs='+',default=['qwen3-1.7b','qwen25-1.5b','smollm2-1.7b','qwen36-nvfp4','qwen38-27b-nvfp4'])
 p.add_argument('--limit',type=int,default=10000)
 a=p.parse_args()
-out=Path('measurements')
+out=MEASUREMENTS
+out.mkdir(parents=True, exist_ok=True)
 for model in a.models:
     stop=out/(model+'.stop')
     stop.unlink(missing_ok=True)

@@ -2,11 +2,16 @@
 import hashlib
 import json
 from pathlib import Path
+try:
+    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+except ImportError:
+    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+
 import time
 import psycopg
 
-out = Path("data")
-out.mkdir(exist_ok=True)
+out = DATA
+out.mkdir(parents=True, exist_ok=True)
 started = time.time()
 manifest = {"seed": 20261025, "target_per_task": 10000, "source": "local Reddit PostgreSQL texts",
             "exclusions": "non-comments; unavailable/deleted/removed text; fewer than 20 or more than 10000 characters",

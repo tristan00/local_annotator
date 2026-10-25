@@ -3,6 +3,11 @@ import itertools
 import json
 from collections import Counter
 from pathlib import Path
+try:
+    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+except ImportError:
+    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+
 import sqlite3
 import statistics
 
@@ -19,7 +24,7 @@ def ratio(a, b):
 
 
 def main():
-    root = Path('measurements')
+    root = MEASUREMENTS
     db = sqlite3.connect(root / 'attempts.sqlite')
     sessions = [json.loads(s) for s in (root / 'sessions.jsonl').read_text().splitlines()] if (root / 'sessions.jsonl').exists() else []
     metrics, outputs, examples = [], {}, []
@@ -37,12 +42,14 @@ def main():
                 continue
             resolved, unanimous, pairs, equal, valid = 0, 0, 0, 0, 0
             distribution = Counter()
+            raw_distribution = Counter()
             decisions = {}
             example_count = 0
             for r in rows:
                 winner, values = vote(r['ballots'], task, n)
                 decisions[r['id']] = winner
                 valid += len(values)
+                raw_distribution.update(json.dumps(v) for v in values)
                 resolved += winner is not None
                 unanimous += len(values) == n and len(set(map(json.dumps, values))) == 1
                 for a, b in itertools.combinations(values, 2):
@@ -63,6 +70,7 @@ def main():
                 equal_valid_pairs=equal, valid_pairs=pairs, pair_agreement=ratio(equal,pairs),
                 unanimous_rate=ratio(unanimous,len(rows)), unresolved_rate=ratio(len(rows)-resolved,len(rows)),
                 value_distribution=dict(distribution), attempt_statuses=statuses,
+                raw_value_distribution=dict(raw_distribution),
                 request_latency_p50=statistics.median(times), request_latency_p95=sorted(times)[min(len(times)-1,int(len(times)*.95))],
                 measured_voters=config['voters'], completed_session_seconds=elapsed,
                 measured_records_per_second=ratio(sum(s['completed_this_session'] for s in sessions if s['run_id']==run_id),elapsed)))
@@ -96,6 +104,13 @@ def main():
             continue
         lines.append(f"| {m['model']} | {m['task']} | {m['repeat']} | {m['voters']} | {m['records']} | {m['unresolved']} | {m['valid_ballots']}/{m['scheduled_ballots']} | {m['equal_valid_pairs']}/{m['valid_pairs']} | {m['unanimous']} |")
     lines += ['', 'The main table and cross-run comparisons use the corrected pooled HTTP adapter. The initial pilot, warmup and interrupted unpooled run remain in the timing table and metrics JSON as diagnostic evidence. The unpooled Windows run exhausted ephemeral socket ports; its unresolved outcomes are not model-quality measurements.']
+    lines += ['', '### Valid absence versus non-absence','',
+              '| Model | Task | Repeat | Raw absence / valid ballots | Voted absence / resolved records (five voters) |',
+              '|---|---|---:|---:|---:|']
+    for m in metrics:
+        if m['transport'] != 'pooled-http-v1' or m['voters'] != 5:
+            continue
+        lines.append(f"| {m['model']} | {m['task']} | {m['repeat']} | {m['raw_value_distribution'].get(json.dumps('not_found'),0)}/{m['valid_ballots']} | {m['value_distribution'].get('not_found',0)}/{m['resolved']} |")
     lines += ['', '### Actual execution timing','', '| Run | Valid / invalid / failed attempts | Session seconds | Records/s | Request p50 / p95 seconds |','|---|---:|---:|---:|---:|']
     for m in metrics:
         if m['voters'] != m['measured_voters']:
@@ -121,7 +136,7 @@ def main():
         '## Qualitative observations','',
         'See measurements/metrics.json for value distributions and stable IDs of observed ballot disagreements. Large not_found shares can dominate age agreement: high agreement alone does not demonstrate successful age extraction. Rhetorical labels reflect a fixed operational rubric, not uniquely true categories. Differences between logos, pathos and mixed warrant inspection of the original comment; this report does not assume any model is correct.', '',
         'All raw attempts and completed results are in measurements/attempts.sqlite. Completed-session timings are in sessions.jsonl; interrupted startup logs remain evidence of failures, not completed runs. Reproduce with the commands in experiments/README.md and regenerate this report using python experiments/analyze.py.']
-    Path('REPORT.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
+    (ARTIFACT_ROOT / 'REPORT.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
 
 if __name__ == '__main__':
     main()

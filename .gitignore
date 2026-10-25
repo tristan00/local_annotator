@@ -7,3 +7,10 @@ dist/
 *.[mM][dD]
 /data/
 /measurements/
+/models/
+/results/
+*.jsonl
+*.sqlite*
+*.safetensors
+*.gguf
+*.log

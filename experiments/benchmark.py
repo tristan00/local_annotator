@@ -6,6 +6,11 @@ from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
+try:
+    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+except ImportError:
+    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+
 import sys
 import time
 
@@ -27,12 +32,12 @@ def main():
     args = p.parse_args()
     if min(args.limit, args.voters, args.workers) < 1 or args.repeat < 0:
         p.error("limit, voters and workers must be positive; repeat must be nonnegative")
-    Path("measurements").mkdir(exist_ok=True)
+    MEASUREMENTS.mkdir(parents=True, exist_ok=True)
     model = OpenAIAdapter(args.url, args.model, temperature=0.7, max_tokens=64)
     tasks = TASKS if args.task == "both" else {args.task: TASKS[args.task]}
-    with model, AttemptStore("measurements/attempts.sqlite") as store:
+    with model, AttemptStore(MEASUREMENTS / "attempts.sqlite") as store:
         for task, fields in tasks.items():
-            path = Path("data") / (task + ".jsonl")
+            path = DATA / (task + ".jsonl")
             rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()][:args.limit]
             if not rows or len({r['id'] for r in rows}) != len(rows):
                 raise ValueError('Benchmark input must be nonempty and contain unique record IDs')
@@ -83,7 +88,7 @@ def main():
                             futures.add(pool.submit(process, item))
             session = {"run_id": run_id, "started_epoch": start, "seconds": time.time()-start,
                        "completed_this_session": count, "previously_completed": len(done), "failed_attempts": failed}
-            with Path("measurements/sessions.jsonl").open("a", encoding="utf-8") as stream:
+            with (MEASUREMENTS / "sessions.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(session) + "\n")
             print("DONE " + json.dumps(session), flush=True)
 

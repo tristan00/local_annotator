@@ -4,6 +4,11 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
+try:
+    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+except ImportError:
+    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
+
 import signal
 import subprocess
 import time
@@ -13,8 +18,8 @@ p = argparse.ArgumentParser()
 p.add_argument("model", choices=["qwen36-nvfp4", "qwen38-27b-nvfp4", "qwen3-0.6b", "qwen3-1.7b", "qwen25-1.5b", "smollm2-1.7b"])
 p.add_argument("--seconds", type=int, default=10800)
 a = p.parse_args()
-out = Path("measurements")
-out.mkdir(exist_ok=True)
+out = MEASUREMENTS
+out.mkdir(parents=True, exist_ok=True)
 model = Path("/root/models") / a.model
 index_path = model / "model.safetensors.index.json"
 shards = set(json.loads(index_path.read_text())["weight_map"].values()) if index_path.exists() else {"model.safetensors"}

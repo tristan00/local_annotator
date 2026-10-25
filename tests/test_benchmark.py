@@ -1,4 +1,5 @@
 import json
+import os
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -28,7 +29,7 @@ class BenchmarkTests(unittest.TestCase):
                 script=Path(__file__).resolve().parents[1]/'experiments'/'benchmark.py'
                 args=[sys.executable,str(script),'test','--url',f'http://127.0.0.1:{server.server_port}/v1/chat/completions','--limit','2','--workers','2']
                 for _ in range(2):
-                    run=subprocess.run(args,cwd=tmp,capture_output=True,text=True,timeout=20)
+                    run=subprocess.run(args,cwd=tmp,env={**os.environ, "LOCAL_ANNOTATOR_ARTIFACTS":tmp},capture_output=True,text=True,timeout=20)
                     self.assertEqual(run.returncode,0,run.stderr)
                 with closing(sqlite3.connect(root/'measurements'/'attempts.sqlite')) as db:
                     self.assertEqual(db.execute('select count(*) from results').fetchone()[0],4)
