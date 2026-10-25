@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-annotator"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "Caller-controlled independent annotation and field voting"
+
+[tool.setuptools.packages.find]
+include = ["local_annotator*"]
