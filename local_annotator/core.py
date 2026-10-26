@@ -62,7 +62,35 @@ def _no_duplicates(pairs):
     return result
 
 
+def _parse_lines(raw, fields):
+    found = {}
+    if raw.strip().lower() != "none":
+        for line in filter(str.strip, raw.splitlines()):
+            name, separator, value = line.partition(":")
+            name, value = name.strip().lower(), " ".join(value.split()).lower()
+            if not separator or name not in fields or not value:
+                raise ValueError("Expected 'none' or 'field: value' lines naming requested fields")
+            found.setdefault(name, set()).add(value)
+    answers, invalid = {}, {}
+    for name, field in fields.items():
+        values = found.get(name, {"none"})
+        if len(values) > 1:
+            invalid[name] = "multiple values"
+            continue
+        value = values.pop()
+        if value == "none":
+            answers[name] = {"status": "not_found"}
+        elif field.allowed and value not in field.allowed:
+            invalid[name] = "disallowed value"
+        else:
+            answers[name] = {"status": "value", "value": value}
+    return answers, invalid
+
+
 def _parse(raw, fields, output_format="nested"):
+    if output_format == "lines":
+        return _parse_lines(raw, fields)
+
     def invalid_constant(value):
         raise ValueError("Non-finite JSON number: " + value)
     data = json.loads(raw, object_pairs_hook=_no_duplicates,
@@ -155,8 +183,10 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
     if not fields or any(not isinstance(k, str) or not k for k in fields):
         raise ValueError("Nonempty named fields are required")
     fields = dict(fields)
-    if output_format not in ("nested", "flat"):
-        raise ValueError("output_format must be nested or flat")
+    if output_format not in ("nested", "flat", "lines"):
+        raise ValueError("output_format must be nested, flat or lines")
+    if output_format == "lines" and any(field.kind != "string" for field in fields.values()):
+        raise ValueError("lines output supports only string fields")
     seen = set()
     for record_index, record in enumerate(records(source)):
         if not isinstance(record, Record) or not isinstance(record.id, str) or not record.id or not isinstance(record.text, str):
