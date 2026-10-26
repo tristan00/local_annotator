@@ -15,7 +15,7 @@ def unresolved(result):
 
 
 def annotate_jsonl(records, out, fields, model, prompt_builder, *, workers, seconds, output_format="lines", annotators=3,
-                   extra_votes=3, resume=False, report_every=5000, seed=0):
+                   extra_votes=3, retries=0, resume=False, report_every=5000, seed=0):
     started = time.perf_counter()
     out = Path(out)
     if out.exists() and not resume:
@@ -29,10 +29,11 @@ def annotate_jsonl(records, out, fields, model, prompt_builder, *, workers, seco
         if time.perf_counter() - started > seconds:
             return
         base = int.from_bytes(hashlib.sha256(f"{seed}:{record.id}".encode()).digest()[:4], "big") % 1_000_000_000
-        result = next(run_annotation(None, lambda _: [record], fields, model, annotators, extra_votes=extra_votes,
+        result = next(run_annotation(None, lambda _: [record], fields, model, annotators, retries=retries, extra_votes=extra_votes,
                                      disagreement=unresolved, seed=base, prompt_builder=prompt_builder,
                                      output_format=output_format))
-        failed = [ballot.error for ballot in result.ballots if ballot.error and not ballot.error.startswith(PARSE_ERRORS)]
+        latest = {ballot.voter: ballot for ballot in result.ballots}
+        failed = [ballot.error for ballot in latest.values() if ballot.error and not ballot.error.startswith(PARSE_ERRORS)]
         if failed:
             raise RuntimeError(f"{record.id}: {failed[0]}")
         values = {name: decision["answer"]["value"] for name, decision in result.decisions.items()
@@ -84,7 +85,7 @@ class Replay:
 
 
 def vote_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, workers, seconds, output_format="lines",
-               report_every=5000, seed=0):
+               retries=0, report_every=5000, seed=0):
     started = time.perf_counter()
     records = {record.id: record for record in records}
     keys = {record_id: key(prompt_builder(record, fields)) for record_id, record in records.items()}
@@ -103,6 +104,6 @@ def vote_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, worke
     models = [Replay(replay) for replay in replays] + ([tiebreaker] if tiebreaker else [])
     counts = annotate_jsonl(list(records.values()), out, fields, models, prompt_builder, workers=workers, seconds=seconds,
                             output_format=output_format, annotators=len(replays), extra_votes=1 if tiebreaker else 0,
-                            resume=Path(out).exists(), report_every=report_every, seed=seed)
+                            retries=retries, resume=Path(out).exists(), report_every=report_every, seed=seed)
     print(f"exit vote {out} seconds={time.perf_counter() - started:.0f}", flush=True)
     return counts

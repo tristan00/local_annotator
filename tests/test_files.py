@@ -45,6 +45,20 @@ class FileTests(unittest.TestCase):
             return paths
         self.vote(collect)
 
+    def test_transport_failure_is_retried_instead_of_aborting(self):
+        failures = []
+
+        def flaky(text, seed):
+            if not failures:
+                failures.append(text)
+                raise ConnectionResetError("reset")
+            return "age: 20"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "voter.jsonl"
+            annotate_jsonl(RECORDS[:1], path, FIELDS, flaky, prompt, workers=1, seconds=60, annotators=1, extra_votes=0, retries=1)
+            row = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual([ballot["error"] is None for ballot in row["ballots"]], [False, True])
+
     def test_concurrent_voters_file_votes_with_tiebreak_only_when_unresolved(self):
         def collect(directory):
             path = directory / "voters.jsonl"
