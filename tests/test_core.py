@@ -45,6 +45,23 @@ class AnnotationTests(unittest.TestCase):
         self.assertEqual(len(result.ballots), 4)
         self.assertEqual(result.decisions["age"]["answer"]["value"], 21)
 
+    def test_each_voter_slot_uses_its_own_model(self):
+        calls = []
+        def voter(value):
+            def model(prompt, seed):
+                calls.append(value)
+                return answer(value)
+            return model
+        result = next(run_annotation(None, lambda _: [Record("a", "I am 25")],
+                                     {"age": Field("Explicit current age", "integer")},
+                                     [voter(20), voter(21), voter(22), voter(21)], annotators=3,
+                                     extra_votes=1, disagreement=lambda _: True))
+        self.assertEqual(calls, [20, 21, 22, 21])
+        self.assertEqual(result.decisions["age"]["answer"]["value"], 21)
+        with self.assertRaises(ValueError):
+            next(run_annotation(None, lambda _: [Record("a", "x")], {"age": Field("Age", "integer")},
+                                [voter(1), voter(2)], annotators=3))
+
     def test_retries_do_not_create_extra_votes(self):
         result = self.run_votes([TimeoutError(), answer(25), answer(26), answer(26)], retries=1)
         self.assertEqual(len(result.ballots), 4)

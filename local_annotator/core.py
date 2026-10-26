@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import json
 import math
 import time
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,7 @@ def _decide(ballots, fields, voters):
 
 
 def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
-                   fields: Mapping[str, Field], model: Callable[[str, int], str],
+                   fields: Mapping[str, Field], model: Callable[[str, int], str] | Sequence[Callable[[str, int], str]],
                    annotators: int = 3, *, retries: int = 0, extra_votes: int = 0,
                    disagreement: Callable[[Result], bool] | None = None,
                    seed: int = 0, on_ballot: Callable[[Ballot], None] | None = None,
@@ -182,6 +182,9 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
     if not fields or any(not isinstance(k, str) or not k for k in fields):
         raise ValueError("Nonempty named fields are required")
     fields = dict(fields)
+    models = list(model) if isinstance(model, Sequence) else [model] * (annotators + extra_votes)
+    if len(models) != annotators + extra_votes or not all(callable(adapter) for adapter in models):
+        raise ValueError("Expected one model or one callable model per voter slot")
     if output_format not in ("nested", "flat", "lines"):
         raise ValueError("output_format must be nested, flat or lines")
     if output_format == "lines" and any(field.kind != "string" for field in fields.values()):
@@ -204,7 +207,7 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
                 raw, answers, invalid, error = None, {}, {}, None
                 started = time.perf_counter()
                 try:
-                    raw = model(prompt, ballot_seed)
+                    raw = models[voter](prompt, ballot_seed)
                     if not isinstance(raw, str):
                         raise ValueError("Adapter must return a JSON string")
                     answers, invalid = _parse(raw, fields, output_format)
