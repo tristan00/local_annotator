@@ -1,6 +1,6 @@
 GREEDY = {"temperature": 0.0}
 LOW_REASONING = {"temperature": 0.0, "reasoning_effort": "low"}
-GATED_DELTA = ["--language-model-only", "--prefix-match-unit", "16"]
+GATED_DELTA = ["--language-model-only", "--prefix-match-unit", "32"]
 
 MODELS = {
     "granite4.2-3b-fp8": {"repository": "ibm-granite/granite-4.2-3b-fp8", "serve": [], "sampling": GREEDY, "max_tokens": 160},
