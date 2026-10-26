@@ -37,6 +37,13 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(requests[1]["messages"][0]["content"],"two")
             self.assertEqual(requests[1]["response_format"]["type"],"json_schema")
             self.assertEqual(requests[1]["response_format"]["json_schema"]["schema"],schema)
+            prefixed = LocalChat(f"http://127.0.0.1:{server.server_port}/v1", "test", {"temperature": 0}, max_tokens=8, timeout=60,
+                                 messages=[{"role": "system", "content": "rules"}, {"role": "user", "content": "example"},
+                                           {"role": "assistant", "content": "none"}])
+            self.assertEqual(prefixed("five", 5), "{}")
+            self.assertEqual([m["role"] for m in requests[-1]["messages"]], ["system", "user", "assistant", "user"])
+            self.assertEqual(requests[-1]["messages"][-1]["content"], "five")
+            prefixed.close()
         finally:
             adapter.close()
             server.shutdown()
