@@ -28,9 +28,11 @@ def agreement(left, right):
 
 def generate(root):
     groups = defaultdict(list)
-    with sqlite3.connect(root / "ballots.sqlite") as db:
-        for model, task, repeat, rid, payload in db.execute("SELECT model,task,repeat,record_id,payload FROM records"):
-            groups[model,task,repeat].append(json.loads(payload))
+    if (root / "ballots.sqlite").exists():
+        with sqlite3.connect(f"file:{(root / 'ballots.sqlite').as_posix()}?mode=ro",uri=True) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='records'").fetchone():
+                for model, task, repeat, rid, payload in db.execute("SELECT model,task,repeat,record_id,payload FROM records"):
+                    groups[model,task,repeat].append(json.loads(payload))
     rows, decisions, qualitative = [], {}, []
     for (model, task, repeat), records in sorted(groups.items()):
         for size in (1,3,5):
@@ -87,6 +89,7 @@ def generate(root):
             writer.writerows({**r,"label_distribution":json.dumps(r["label_distribution"])} for r in rows)
     status = json.loads((root / "matrix-status.json").read_text())
     lines = ["# Local Annotator: fresh local-model comparison", "",
+        "Status is provisional while any model is loading or benchmarking. Completed-record denominators below can be smaller than the requested sample; consult matrix-status.json and task timing files for completion.", "",
         "## Coverage", "", "| Model | Status | Cold start seconds | Weight GB |", "|---|---|---:|---:|"]
     for name, meta in status.items():
         lines.append(f'| {name} | {meta["status"]} | {meta.get("cold_start_seconds",0):.1f} | {meta.get("weights_bytes",0)/1e9:.2f} |')

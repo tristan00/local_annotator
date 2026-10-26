@@ -47,6 +47,9 @@ def main():
     parser.add_argument("--cache", default="/root/models")
     args = parser.parse_args()
     root = artifact_root(args.output)
+    if (root / "matrix-status.json").exists():
+        raise FileExistsError("Use a fresh output directory; refusing to overwrite a previous matrix")
+    write_json(root / "planned-models.json", args.models)
     source = Path(__file__).resolve().parents[1]
     write_json(root / "source-hashes.json", {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
                for directory in (source / "local_annotator", source / "experiments") for p in directory.glob("*.py")})
