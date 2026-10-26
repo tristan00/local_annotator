@@ -137,24 +137,23 @@ def _prompt(record, fields):
 
 
 def _decide(ballots, fields, voters):
-    # The denominator is all scheduled voters, including failures. Retrying a
-    # request never grants that voter another vote.
     latest = {}
     for ballot in ballots:
         latest[ballot.voter] = ballot
-    threshold = voters // 2 + 1
     decisions = {}
     for name in fields:
         counts = Counter(json.dumps(b.answers[name], sort_keys=True) for b in latest.values() if name in b.answers)
-        winner, support = counts.most_common(1)[0] if counts else (None, 0)
-        resolved = support >= threshold
+        ranked = counts.most_common(2)
+        winner, support = ranked[0] if ranked else (None, 0)
+        runner_up = ranked[1][1] if len(ranked) > 1 else 0
+        resolved = support >= 2 and support > runner_up
         decisions[name] = {"status": "resolved" if resolved else "unresolved",
                            "answer": json.loads(winner) if resolved else None,
-                           "support": support, "threshold": threshold,
+                           "support": support, "runner_up": runner_up,
                            "scheduled_voters": voters,
                            "valid_votes": sum(counts.values()),
                            "counts": dict(counts),
-                           "method": "strict_majority"}
+                           "method": "largest_share_of_at_least_two"}
     return decisions
 
 

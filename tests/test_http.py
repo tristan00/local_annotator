@@ -24,7 +24,7 @@ class AdapterTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
         schema={"type":"object","properties":{"age":{"type":["integer","null"]}},"required":["age"],"additionalProperties":False}
-        adapter=LocalChat(f"http://127.0.0.1:{server.server_port}/v1","test",schema=schema)
+        adapter=LocalChat(f"http://127.0.0.1:{server.server_port}/v1","test",{"temperature":0.7},max_tokens=192,timeout=60,schema=schema)
         try:
             self.assertEqual(adapter("one",1),"{}")
             self.assertEqual(adapter("two",2),"{}")

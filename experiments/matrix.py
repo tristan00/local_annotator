@@ -103,7 +103,7 @@ def main():
             meta["cold_start_seconds"] = time.time() - meta["started"]
             for task, text in (("age", "I am 25 years old."),
                                ("appeal", "The proposal costs less, so it saves money.")):
-                adapter = LocalChat("http://127.0.0.1:8091/v1", name, schema=SCHEMAS[task])
+                adapter = LocalChat("http://127.0.0.1:8091/v1", name, {"temperature": 0.7}, max_tokens=192, timeout=60, schema=SCHEMAS[task])
                 try:
                     preflight = next(run_annotation(None, lambda _: [Record("synthetic-preflight", text)],
                         TASKS[task], adapter, annotators=3, seed=42,

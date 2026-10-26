@@ -6,13 +6,13 @@ from urllib.parse import urlsplit
 
 
 class LocalChat:
-    def __init__(self, endpoint, model, *, temperature=0.7, max_tokens=192, timeout=60, schema=None, regex=None):
+    def __init__(self, endpoint, model, sampling, *, max_tokens, timeout, schema=None, regex=None):
         url = urlsplit(endpoint)
         if url.scheme != "http" or url.hostname not in ("127.0.0.1", "localhost", "::1"):
             raise ValueError("LocalChat requires a loopback HTTP endpoint")
         self.host, self.port = url.hostname, url.port or 80
         self.path = url.path.rstrip("/") + "/chat/completions"
-        self.model, self.temperature, self.max_tokens = model, temperature, max_tokens
+        self.model, self.sampling, self.max_tokens = model, dict(sampling), max_tokens
         self.timeout = timeout
         self.local = threading.local()
         self.schema = schema
@@ -23,7 +23,7 @@ class LocalChat:
             self.local.connection = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
         connection = self.local.connection
         payload = {"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                   "temperature": self.temperature, "max_tokens": self.max_tokens, "seed": seed,
+                   **self.sampling, "max_tokens": self.max_tokens, "seed": seed,
                    "chat_template_kwargs": {"enable_thinking": False}}
         if self.schema is not None:
             payload["response_format"] = {"type": "json_schema", "json_schema": {

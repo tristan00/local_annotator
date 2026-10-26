@@ -29,7 +29,7 @@ def run(root, model, *, workers=8):
     metrics = []
     try:
         for task, fields in TASKS.items():
-            adapter = LocalChat("http://127.0.0.1:8091/v1", model, schema=SCHEMAS[task])
+            adapter = LocalChat("http://127.0.0.1:8091/v1", model, {"temperature": 0.7}, max_tokens=192, timeout=60, schema=SCHEMAS[task])
             data = [json.loads(line) for line in (root / (task + ".jsonl")).read_text(encoding="utf-8").splitlines()]
             for repeat in (0, 1):
                 selected = data if repeat == 0 else data[:200]
