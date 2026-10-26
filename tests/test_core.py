@@ -1,117 +1,96 @@
 import json
-from contextlib import closing
-from pathlib import Path
-import sqlite3
-import tempfile
 import unittest
-from local_annotator import AttemptStore, Field, ModelResponse, run_annotation
+from local_annotator import Field, Record, run_annotation
 
 
-class Sequence:
-    def __init__(self, answers):
-        self.answers = iter(answers)
-        self.messages = []
-
-    def __call__(self, messages, **kwargs):
-        self.messages.append(messages)
-        answer = next(self.answers)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
+def answer(value):
+    return json.dumps({"age": {"status": "value", "value": value}})
 
 
-class VotingTests(unittest.TestCase):
-    def run_case(self, answers, **kwargs):
-        adapter = Sequence(answers)
-        fields = kwargs.pop("fields", {"age": Field("Explicit current author age", "integer")})
-        result = next(run_annotation(None, lambda _: [{"id": "x", "text": "I am 25."}],
-                                     fields, adapter, **kwargs))
-        return result, adapter
+class AnnotationTests(unittest.TestCase):
+    def run_votes(self, responses, **kwargs):
+        replies = iter(responses)
+        prompts = []
+        def model(prompt, seed):
+            prompts.append(prompt)
+            value = next(replies)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        results = list(run_annotation(None, lambda _: [Record("a", "I am 25")],
+                                     {"age": Field("Explicit current age", "integer")},
+                                     model, **kwargs))
+        self.assertEqual(len(set(prompts)), 1)
+        return results[0]
 
-    def test_majority_and_isolation(self):
-        result, adapter = self.run_case(['{"age":25}', '{"age":26}', '{"age":25}'])
-        self.assertEqual(result["fields"]["age"]["value"], 25)
-        self.assertEqual(adapter.messages[0], adapter.messages[1])
-        self.assertIsNot(adapter.messages[0], adapter.messages[1])
+    def test_absence_is_distinct_from_invalid_and_transport_failure(self):
+        result = self.run_votes(['{"age":{"status":"not_found"}}', '{}', TimeoutError()])
+        self.assertEqual(result.decisions["age"]["status"], "unresolved")
+        self.assertEqual(result.decisions["age"]["valid_votes"], 1)
+        self.assertIn("age", result.ballots[1].invalid)
+        self.assertIn("TimeoutError", result.ballots[2].error)
 
-    def test_absence_is_a_valid_vote(self):
-        result, _ = self.run_case(['{"age":"not_found"}'] * 2 + ['{}'])
-        self.assertEqual(result["fields"]["age"]["value"], "not_found")
+    def test_failed_voters_remain_in_denominator(self):
+        result = self.run_votes([answer(25), answer(25), '{}', '{}', '{}'], annotators=5)
+        self.assertEqual(result.decisions["age"]["status"], "unresolved")
+        self.assertEqual(result.decisions["age"]["threshold"], 3)
 
-    def test_failures_do_not_lower_threshold(self):
-        result, _ = self.run_case(['{"age":25}', TimeoutError(), '{}'])
-        self.assertEqual(result["fields"]["age"]["status"], "unresolved")
-        self.assertEqual(result["ballots"][1]["attempts"][0]["status"], "failed")
+    def test_strict_majority_for_even_voter_count(self):
+        result = self.run_votes([answer(25), answer(25), answer(26), answer(26)], annotators=4)
+        self.assertEqual(result.decisions["age"]["status"], "unresolved")
 
-    def test_even_count_requires_strict_majority(self):
-        result, _ = self.run_case(['{"age":25}'] * 2 + ['{"age":26}'] * 2, annotator_count=4)
-        self.assertEqual(result["fields"]["age"]["threshold"], 3)
-        self.assertEqual(result["fields"]["age"]["status"], "unresolved")
+    def test_retries_do_not_create_extra_votes(self):
+        result = self.run_votes([TimeoutError(), answer(25), answer(26), answer(26)], retries=1)
+        self.assertEqual(len(result.ballots), 4)
+        self.assertEqual(result.decisions["age"]["answer"]["value"], 26)
+        self.assertEqual(result.decisions["age"]["valid_votes"], 3)
 
-    def test_no_bool_as_integer_or_implicit_numeric_string(self):
-        result, _ = self.run_case(['{"age":true}', '{"age":"25"}', '{"age":25}'])
-        self.assertEqual(result["fields"]["age"]["status"], "unresolved")
+    def test_extra_votes_are_bounded(self):
+        result = self.run_votes([answer(20), answer(21), answer(22), answer(23), answer(24)],
+                                extra_votes=2, disagreement=lambda _: True)
+        self.assertEqual(len(result.ballots), 5)
+        self.assertEqual(result.decisions["age"]["status"], "unresolved")
 
-    def test_declared_normalization(self):
-        result, _ = self.run_case(['{"age":"25"}', '{"age":25}', '{}'],
-                                  fields={"age": Field("Age", "integer", integer_strings=True)})
-        self.assertEqual(result["fields"]["age"]["value"], 25)
+    def test_majority_does_not_request_extra_work(self):
+        result = self.run_votes([answer(25)] * 3, extra_votes=5, disagreement=lambda _: True)
+        self.assertEqual(len(result.ballots), 3)
 
-    def test_retries_preserve_valid_fields(self):
-        fields = {"age": Field("Age", "integer"), "appeal": Field("Appeal", allowed=("logos", "ethos"))}
-        result, _ = self.run_case(['{"age":25}', '{"age":26,"appeal":"logos"}'],
-                                  fields=fields, annotator_count=1, retries=1)
-        self.assertEqual(result["fields"]["age"]["value"], 25)
-        self.assertEqual(result["fields"]["appeal"]["value"], "logos")
-        self.assertEqual(len(result["ballots"][0]["attempts"]), 2)
+    def test_invalid_types_duplicate_keys_and_nonfinite_values(self):
+        for raw in [answer(True), answer(25.0), answer(None), answer("25"),
+                    '{"age":{"status":"value","value":25,"value":26}}',
+                    '{"age":{"status":"value","value":NaN}}']:
+            with self.subTest(raw=raw):
+                result = self.run_votes([raw], annotators=1)
+                self.assertEqual(result.decisions["age"]["valid_votes"], 0)
 
-    def test_extra_votes_bounded(self):
-        result, _ = self.run_case(['{"age":25}', '{"age":26}', '{"age":27}', '{"age":25}', '{"age":25}'],
-                                  disagreement="extra", extra_votes=2)
-        self.assertEqual(result["fields"]["age"]["value"], 25)
-        self.assertEqual(result["fields"]["age"]["threshold"], 3)
-        self.assertEqual(len(result["ballots"]), 5)
+    def test_persistence_failure_propagates(self):
+        def fail(ballot):
+            raise OSError("disk full")
+        with self.assertRaisesRegex(OSError, "disk full"):
+            self.run_votes([answer(25)], annotators=1, on_ballot=fail)
 
-    def test_extra_votes_freeze_initial_field_winner(self):
-        fields = {"age": Field("Age", "integer"), "appeal": Field("Appeal")}
-        result, _ = self.run_case([
-            '{"age":25,"appeal":"a"}', '{"age":25,"appeal":"b"}', '{"age":26,"appeal":"c"}',
-            '{"age":26,"appeal":"a"}', '{"age":26,"appeal":"a"}'],
-            fields=fields, disagreement="extra", extra_votes=2)
-        self.assertEqual(result["fields"]["age"]["value"], 25)
-        self.assertEqual(result["fields"]["age"]["method"], "initial_majority")
-        self.assertEqual(result["fields"]["appeal"]["value"], "a")
-        self.assertEqual(result["fields"]["appeal"]["method"], "extra_majority")
+    def test_observer_cannot_change_the_votes(self):
+        def mutate(ballot):
+            ballot.answers.clear()
+        result = self.run_votes([answer(25)] * 3, on_ballot=mutate)
+        self.assertEqual(result.decisions["age"]["answer"]["value"], 25)
 
-    def test_callback_provenance_and_error(self):
-        result, _ = self.run_case(['{}'] * 3, disagreement=lambda *args: 31)
-        self.assertEqual(result["fields"]["age"]["method"], "callback")
-        result, _ = self.run_case(['{}'] * 3, disagreement=lambda *args: "wrong")
-        self.assertIn("callback_error", result["fields"]["age"])
+    def test_duplicate_record_ids_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Duplicate record"):
+            list(run_annotation(None, lambda _: [Record("a", "x")] * 2,
+                                {"age": Field("age", "integer")}, lambda *_: answer(25)))
 
-    def test_duplicate_keys_and_truncation_invalid(self):
-        for raw in ['{"age":25,"age":26}', ModelResponse('{"age":25}', {"finish_reason":"length"})]:
-            result, _ = self.run_case([raw] * 3)
-            self.assertEqual(result["fields"]["age"]["status"], "unresolved")
-
-    def test_duplicate_ids_rejected(self):
-        with self.assertRaises(ValueError):
-            list(run_annotation(None, lambda _: [{"id": "x", "text": "a"}] * 2,
-                                {"age": Field("Age", "integer")}, Sequence(['{"age":25}']), annotator_count=1))
-
-    def test_attempts_durable_before_result(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "attempts.db"
-            with AttemptStore(path) as store:
-                run = store.start_run({"test": True})
-                result, _ = self.run_case(['{}', '{"age":25}'], annotator_count=1, retries=1,
-                                          on_attempt=store.attempt_sink(run))
-                with closing(sqlite3.connect(path)) as reader:
-                    self.assertEqual(reader.execute("SELECT count(*) FROM attempts").fetchone()[0], 2)
-                    self.assertEqual(reader.execute("SELECT count(*) FROM results").fetchone()[0], 0)
-                store.save_result(run, result)
-            with closing(sqlite3.connect(path)) as reader:
-                self.assertEqual(json.loads(reader.execute("SELECT payload FROM results").fetchone()[0])["id"], "x")
+    def test_resolution_is_frozen_per_field(self):
+        replies = iter([json.dumps({"a": {"status":"value", "value": a},
+                                    "b": {"status":"value", "value": b}})
+                        for a, b in [(1,1),(1,2),(2,3),(2,2),(2,2)]])
+        result = next(run_annotation(None, lambda _: [Record("a", "text")],
+            {"a": Field("a", "integer"), "b": Field("b", "integer")},
+            lambda *_: next(replies), extra_votes=2, disagreement=lambda _: True))
+        self.assertEqual(result.decisions["a"]["answer"]["value"], 1)
+        self.assertEqual(result.decisions["a"]["scheduled_voters"], 3)
+        self.assertEqual(result.decisions["b"]["answer"]["value"], 2)
+        self.assertEqual(result.decisions["b"]["scheduled_voters"], 5)
 
 
 if __name__ == "__main__":

@@ -1,30 +1,41 @@
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
-from threading import Thread
+import threading
 import unittest
-from local_annotator import OpenAIAdapter
+from local_annotator.http import LocalChat
 
-class HTTPTests(unittest.TestCase):
-    def test_reuses_connection_and_preserves_request_settings(self):
-        requests=[]
+
+class AdapterTests(unittest.TestCase):
+    def test_connection_reuse_and_failure_recovery(self):
+        peers, requests = [], []
         class Handler(BaseHTTPRequestHandler):
-            protocol_version='HTTP/1.1'
+            protocol_version = "HTTP/1.1"
             def do_POST(self):
-                body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                requests.append((self.client_address,body))
-                raw=json.dumps({'choices':[{'message':{'content':'{"age":25}'},'finish_reason':'stop'}]}).encode()
-                self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
-            def log_message(self,*args):pass
-        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
-        thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+                peers.append(self.client_address)
+                requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                body = json.dumps({"choices":[{"finish_reason":"stop", "message":{"content":"{}"}}]}).encode()
+                self.send_response(503 if len(peers)==3 else 200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self,*args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1",0),Handler)
+        thread = threading.Thread(target=server.serve_forever,daemon=True)
+        thread.start()
+        adapter=LocalChat(f"http://127.0.0.1:{server.server_port}/v1","test")
         try:
-            with OpenAIAdapter(f'http://127.0.0.1:{server.server_port}/v1/chat/completions','test') as adapter:
-                for seed in (1,2,3):
-                    response=adapter([{'role':'user','content':'text'}],timeout=2,seed=seed)
-                    self.assertEqual(response.content,'{"age":25}')
-            self.assertEqual(len({r[0] for r in requests}),1)
-            self.assertEqual([r[1]['seed'] for r in requests],[1,2,3])
+            self.assertEqual(adapter("one",1),"{}")
+            self.assertEqual(adapter("two",2),"{}")
+            self.assertEqual(peers[0],peers[1])
+            with self.assertRaisesRegex(RuntimeError,"HTTP 503"):
+                adapter("three",3)
+            self.assertEqual(adapter("four",4),"{}")
+            self.assertNotEqual(peers[2],peers[3])
+            self.assertEqual(len(requests[1]["messages"]),1)
+            self.assertEqual(requests[1]["messages"][0]["content"],"two")
         finally:
-            server.shutdown();server.server_close();thread.join()
-
-if __name__=='__main__':unittest.main()
+            adapter.close()
+            server.shutdown()
+            server.server_close()
+            thread.join()

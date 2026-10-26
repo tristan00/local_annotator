@@ -1,97 +1,82 @@
-"""Bounded, resumable benchmark; all attempts durably persisted in SQLite."""
-import argparse
-from collections import deque
+"""Measure identical nested 1/3/5 ballot panels; independently repeat 200 records.
+
+The smaller panels are prefixes of five ballots, NOT separate timing runs.
+Only full five-ballot panel throughput is measured. No agreement is accuracy.
+"""
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict
 import hashlib
 import json
-from pathlib import Path
-try:
-    from .paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
-except ImportError:
-    from paths import ARTIFACT_ROOT, DATA, MEASUREMENTS
-
-import sys
+import sqlite3
+import threading
 import time
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from local_annotator import AttemptStore, OpenAIAdapter, run_annotation
-from experiments.tasks import TASKS, VERSION
-
-
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("model")
-    p.add_argument("--limit", type=int, default=10000)
-    p.add_argument("--voters", type=int, default=5)
-    p.add_argument("--repeat", type=int, default=0)
-    p.add_argument("--workers", type=int, default=32)
-    p.add_argument("--label", default="main")
-    p.add_argument("--task", choices=["age", "appeal", "both"], default="both")
-    p.add_argument("--url", default="http://127.0.0.1:8091/v1/chat/completions")
-    args = p.parse_args()
-    if min(args.limit, args.voters, args.workers) < 1 or args.repeat < 0:
-        p.error("limit, voters and workers must be positive; repeat must be nonnegative")
-    MEASUREMENTS.mkdir(parents=True, exist_ok=True)
-    model = OpenAIAdapter(args.url, args.model, temperature=0.7, max_tokens=64)
-    tasks = TASKS if args.task == "both" else {args.task: TASKS[args.task]}
-    with model, AttemptStore(MEASUREMENTS / "attempts.sqlite") as store:
-        for task, fields in tasks.items():
-            path = DATA / (task + ".jsonl")
-            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()][:args.limit]
-            if not rows or len({r['id'] for r in rows}) != len(rows):
-                raise ValueError('Benchmark input must be nonempty and contain unique record IDs')
-            run_id = f"{args.label}-{args.model}-{task}-n{len(rows)}-v{args.voters}-r{args.repeat}"
-            config = {**vars(args), "task": task, "task_version": VERSION,
-                      "fields": {k: asdict(v) for k,v in fields.items()}, "settings": model.config,
-                      "sample_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-            config = json.loads(json.dumps(config))  # Canonicalize tuple fields for resume comparison.
-            existing = store.connection.execute("SELECT config FROM runs WHERE run_id=?", (run_id,)).fetchone()
-            if existing is None:
-                store.start_run(config, run_id)
-            elif json.loads(existing[0]) != config:
-                raise ValueError("Resume config differs")
-            done = {json.loads(row[0]) for row in store.connection.execute("SELECT record_id FROM results WHERE run_id=?", (run_id,))}
-            todo = [(i,r) for i,r in enumerate(rows) if r["id"] not in done]
-            sink = store.attempt_sink(run_id)
-            start = time.time()
-            def process(item):
-                i, record = item
-                result = next(run_annotation(None, lambda _: [record], fields, model, args.voters,
-                    seed=20261025 + args.repeat * 1000000 + i * 10, task_version=VERSION,
-                    timeout=45, retries=0, concurrency=1, on_attempt=sink))
-                store.save_result(run_id, result)
-                return result
-            count = failed = 0
-            recent_failures = deque(maxlen=20)
-            print(f"START {run_id} todo={len(todo)}", flush=True)
-            with ThreadPoolExecutor(max_workers=args.workers) as pool:
-                remaining = iter(todo)
-                futures = set()
-                for _ in range(min(args.workers, len(todo))):
-                    futures.add(pool.submit(process, next(remaining)))
-                while futures:
-                    completed, futures = wait(futures, return_when=FIRST_COMPLETED)
-                    for future in completed:
-                        result = future.result()
-                        count += 1
-                        failed += sum(a["status"] == "failed" for b in result["ballots"] for a in b["attempts"])
-                        recent_failures.append(all(a['status'] == 'failed' for b in result['ballots'] for a in b['attempts']))
-                        if count % 100 == 0:
-                            print(f"{run_id} records={count}/{len(todo)} seconds={time.time()-start:.1f} failed={failed}", flush=True)
-                        if (len(recent_failures) == 20 and sum(recent_failures) >= 15) or (count >= min(100, len(todo)) and failed > args.voters * count / 2):
-                            for f in futures:
-                                f.cancel()
-                            raise RuntimeError("Failure rate exceeded 50%; stopped submitting work")
-                        item = next(remaining, None)
-                        if item is not None:
-                            futures.add(pool.submit(process, item))
-            session = {"run_id": run_id, "started_epoch": start, "seconds": time.time()-start,
-                       "completed_this_session": count, "previously_completed": len(done), "failed_attempts": failed}
-            with (MEASUREMENTS / "sessions.jsonl").open("a", encoding="utf-8") as stream:
-                stream.write(json.dumps(session) + "\n")
-            print("DONE " + json.dumps(session), flush=True)
+from local_annotator import Record, run_annotation
+from local_annotator.http import LocalChat
+from .tasks import TASKS, VERSION
+from .common import write_json
 
 
-if __name__ == "__main__":
-    main()
+def run(root, model, *, workers=8):
+    db = sqlite3.connect(root / "ballots.sqlite", check_same_thread=False)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=FULL")
+    db.execute("CREATE TABLE IF NOT EXISTS attempts (model TEXT, task TEXT, repeat INTEGER, record_id TEXT, voter INTEGER, attempt INTEGER, payload TEXT, PRIMARY KEY(model,task,repeat,record_id,voter,attempt))")
+    db.execute("CREATE TABLE IF NOT EXISTS records (model TEXT, task TEXT, repeat INTEGER, record_id TEXT, payload TEXT, PRIMARY KEY(model,task,repeat,record_id))")
+    if db.execute("SELECT 1 FROM attempts WHERE model=? LIMIT 1", (model,)).fetchone():
+        raise RuntimeError("Existing model results: use a fresh run directory, never silently resume")
+    lock = threading.Lock()
+    adapter = LocalChat("http://127.0.0.1:8091/v1", model)
+    metrics = []
+    try:
+        for task, fields in TASKS.items():
+            data = [json.loads(line) for line in (root / (task + ".jsonl")).read_text(encoding="utf-8").splitlines()]
+            for repeat in (0, 1):
+                selected = data if repeat == 0 else data[:200]
+                started, completed, failures = time.perf_counter(), 0, 0
+                def annotate(row):
+                    record = Record(row["id"], row["text"])
+                    seed = int.from_bytes(hashlib.sha256(f'{task}:{repeat}:{record.id}'.encode()).digest()[:4], "big") % 1_000_000_000
+                    def save(ballot):
+                        with lock:
+                            db.execute("INSERT INTO attempts VALUES (?,?,?,?,?,?,?)", (model,task,repeat,record.id,ballot.voter,ballot.attempt,json.dumps(asdict(ballot))))
+                            db.commit()
+                    result = next(run_annotation(None, lambda _: [record], fields, adapter,
+                                                 annotators=5, seed=seed, on_ballot=save))
+                    with lock:
+                        db.execute("INSERT INTO records VALUES (?,?,?,?,?)", (model,task,repeat,record.id,json.dumps(asdict(result))))
+                        db.commit()
+                    return sum(b.error is not None and not b.error.startswith(("ValueError:", "JSONDecodeError:")) for b in result.ballots)
+                iterator, pending, aborted = iter(selected), set(), None
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    def submit():
+                        row = next(iterator, None)
+                        if row is not None:
+                            pending.add(pool.submit(annotate, row))
+                    for _ in range(workers):
+                        submit()
+                    while pending:
+                        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                        for future in done:
+                            failures += future.result()
+                            completed += 1
+                        if completed >= 50 and failures / (completed * 5) > 0.2:
+                            aborted = "request failure rate exceeded 20% after 50 records"
+                        if time.perf_counter() - started > 1800:
+                            aborted = "30-minute task/run bound reached"
+                        if not aborted:
+                            for _ in done:
+                                submit()
+                        if completed % 100 < len(done):
+                            print(model, task, repeat, completed, "/", len(selected), flush=True)
+                metric = {"model": model, "task": task, "repeat": repeat, "requested": len(selected),
+                          "completed": completed, "seconds": time.perf_counter()-started,
+                          "workers": workers, "aborted": aborted, "task_version": VERSION,
+                          "ballots_per_record": 5, "temperature": 0.7, "max_output_tokens": 192,
+                          "timing": "warm model; includes generation, validation, and synchronous durable writes"}
+                metrics.append(metric)
+                write_json(root / (model + "-timing.json"), metrics)
+                if aborted:
+                    raise RuntimeError(aborted)
+    finally:
+        adapter.close()
+        db.close()
