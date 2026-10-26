@@ -84,7 +84,7 @@ class Replay:
         return raw
 
 
-def vote_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, workers, seconds, output_format="lines",
+def vote_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, base, workers, seconds, output_format="lines",
                retries=0, report_every=5000, seed=0):
     started = time.perf_counter()
     records = {record.id: record for record in records}
@@ -97,13 +97,15 @@ def vote_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, worke
         for row in rows:
             for ballot in row["ballots"]:
                 replays[offset + ballot["voter"]][keys[row["id"]]] = (ballot["raw"], ballot["error"])
-    missing = [record_id for record_id, digest in keys.items() if any(digest not in replay for replay in replays)]
+    if not 1 <= base <= len(replays):
+        raise ValueError(f"base must be between 1 and the {len(replays)} replayed voters")
+    missing = [record_id for record_id, digest in keys.items() if any(digest not in replay for replay in replays[:base])]
     if missing:
-        raise ValueError(f"{len(missing)} records lack a ballot from every voter, e.g. {missing[0]}")
-    print(f"enter vote {out} records={len(records)} voters={len(replays)} tiebreaker={tiebreaker is not None}", flush=True)
+        raise ValueError(f"{len(missing)} records lack a ballot from every base voter, e.g. {missing[0]}")
+    print(f"enter vote {out} records={len(records)} base={base} replayed={len(replays)} tiebreaker={tiebreaker is not None}", flush=True)
     models = [Replay(replay) for replay in replays] + ([tiebreaker] if tiebreaker else [])
     counts = annotate_jsonl(list(records.values()), out, fields, models, prompt_builder, workers=workers, seconds=seconds,
-                            output_format=output_format, annotators=len(replays), extra_votes=1 if tiebreaker else 0,
+                            output_format=output_format, annotators=base, extra_votes=len(models) - base,
                             retries=retries, resume=Path(out).exists(), report_every=report_every, seed=seed)
     print(f"exit vote {out} seconds={time.perf_counter() - started:.0f}", flush=True)
     return counts

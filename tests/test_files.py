@@ -29,7 +29,7 @@ class FileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             voted = collect(Path(directory))
             final = Path(directory) / "final.jsonl"
-            vote_jsonl(RECORDS, voted, final, FIELDS, tiebreaker, prompt, workers=2, seconds=60)
+            vote_jsonl(RECORDS, voted, final, FIELDS, tiebreaker, prompt, base=3, workers=2, seconds=60)
             rows = {row["id"]: row for row in map(json.loads, final.read_text(encoding="utf-8").splitlines())}
         self.assertEqual(calls, ["two"])
         self.assertEqual(rows["a"]["values"], {"age": "20"})
@@ -66,6 +66,25 @@ class FileTests(unittest.TestCase):
                            annotators=3, extra_votes=0)
             return [path]
         self.vote(collect)
+
+    def test_lazy_third_voter_and_tiebreaker_run_in_separate_stages_only_when_unresolved(self):
+        third, tie = [], []
+
+        def live(calls, answer):
+            return lambda text, seed: calls.append(text) or answer
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            paths = [directory / f"voter{index}.jsonl" for index in range(2)]
+            for path, answers in zip(paths, ANSWERS):
+                annotate_jsonl(RECORDS, path, FIELDS, voter(answers), prompt, workers=2, seconds=60, annotators=1, extra_votes=0)
+            staged, final = directory / "third.jsonl", directory / "final.jsonl"
+            vote_jsonl(RECORDS, paths, staged, FIELDS, live(third, "age: 32\ncity: oslo"), prompt, base=2, workers=2, seconds=60)
+            vote_jsonl(RECORDS, [staged], final, FIELDS, live(tie, "age: 31\ncity: oslo"), prompt, base=2, workers=2, seconds=60)
+            rows = {row["id"]: row for row in map(json.loads, final.read_text(encoding="utf-8").splitlines())}
+        self.assertEqual((third, tie), (["two"], ["two"]))
+        self.assertEqual(rows["a"]["values"], {"age": "20"})
+        self.assertEqual(rows["b"]["values"], {"age": "31", "city": "oslo"})
+        self.assertEqual(len(rows["b"]["ballots"]), 4)
 
 
 if __name__ == "__main__":
