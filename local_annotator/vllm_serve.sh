@@ -15,6 +15,6 @@ if [ "$headers" != "$((major * 1000 + minor * 10))" ]; then
   echo "vllm_serve: nvcc $major.$minor does not match CUDA headers $headers in $CUDA_HOME; FlashInfer JIT would fail. Rebuild with: $REBUILD" >&2
   exit 1
 fi
-export CUDA_HOME PATH="$CUDA_HOME/bin:/root/vllm/bin:$PATH" VLLM_USE_FLASHINFER_SAMPLER=0 PYTHONDONTWRITEBYTECODE=1 MAX_JOBS=6
+export CUDA_HOME PATH="$CUDA_HOME/bin:/root/vllm/bin:$PATH" VLLM_USE_FLASHINFER_SAMPLER=0 PYTHONDONTWRITEBYTECODE=1 MAX_JOBS=6 VLLM_ENGINE_READY_TIMEOUT_S=3600
 echo "vllm_serve: CUDA_HOME=$CUDA_HOME nvcc=$major.$minor headers=$headers MAX_JOBS=$MAX_JOBS args=$*" >&2
 exec /root/vllm/bin/vllm serve "$@"
