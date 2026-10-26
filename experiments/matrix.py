@@ -73,20 +73,13 @@ def main():
                 raise RuntimeError("Missing weight files: " + repr(missing))
             meta.update(config=config, weights_bytes=sum((path/w).stat().st_size for w in weights),
                         versions={n:importlib.metadata.version(n) for n in ("vllm", "torch", "transformers")})
-            command = ["/root/vllm/bin/vllm", "serve", str(path), "--host", "127.0.0.1", "--port", "8091",
+            command = ["bash", str(source / "local_annotator" / "vllm_serve.sh"), str(path), "--host", "127.0.0.1", "--port", "8091",
                        "--served-model-name", name, "--max-model-len", "4096", "--max-num-seqs", "32",
                        "--gpu-memory-utilization", "0.85", "--language-model-only", "--enforce-eager"]
-            env = os.environ.copy()
-            # Use the installed, matching compiler/header tree; do not modify it.
-            toolkit = Path("/root/vllm/lib/python3.12/site-packages/nvidia/cu13")
-            env["CUDA_HOME"] = str(toolkit)
-            env["PATH"] = str(toolkit / "bin") + ":/root/vllm/bin:" + env.get("PATH", "")
-            env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
-            env["PYTHONDONTWRITEBYTECODE"] = "1"
-            meta.update(command=command, environment={k:env[k] for k in ("CUDA_HOME", "PATH", "VLLM_USE_FLASHINFER_SAMPLER")},status="loading")
+            meta.update(command=command, status="loading")
             write_json(root / "matrix-status.json", status)
             log = (root / (name + "-server.log")).open("w")
-            proc = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             thread = threading.Thread(target=monitor, args=(root,name,stop), daemon=True)
             thread.start()
             deadline = time.monotonic() + 600
