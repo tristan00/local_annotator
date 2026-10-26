@@ -26,6 +26,7 @@ def start(name, port, gpu_memory_utilization, max_num_seqs=256, max_model_len=81
     log = f"{ROOT}/serve_{name}.log"
     arguments = ["--served-model-name", name, "--host", "127.0.0.1", "--port", str(port), "--max-model-len", str(max_model_len),
                  "--max-num-seqs", str(max_num_seqs), "--gpu-memory-utilization", str(gpu_memory_utilization), "--enable-prefix-caching",
+                 "--max-num-batched-tokens", "16384", "--api-server-count", "4",
                  *MODELS[name]["serve"], *extra]
     command = f"cd /root && timeout {minutes * 60} bash {SCRIPT} {ROOT}/{name} {' '.join(arguments)} > {log} 2>&1"
     print(f"enter start {name} port={port} command={command}", flush=True)
