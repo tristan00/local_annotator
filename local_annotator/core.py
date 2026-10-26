@@ -62,7 +62,7 @@ def _no_duplicates(pairs):
     return result
 
 
-def _parse(raw, fields):
+def _parse(raw, fields, output_format="nested"):
     def invalid_constant(value):
         raise ValueError("Non-finite JSON number: " + value)
     data = json.loads(raw, object_pairs_hook=_no_duplicates,
@@ -71,7 +71,12 @@ def _parse(raw, fields):
         raise ValueError("Expected an object containing only requested fields")
     answers, invalid = {}, {}
     for name, field in fields.items():
+        if name not in data:
+            invalid[name] = "missing answer"
+            continue
         answer = data.get(name)
+        if output_format == "flat":
+            answer = {"status": "not_found"} if answer is None else {"status": "value", "value": answer}
         if answer == {"status": "not_found"}:
             answers[name] = answer
             continue
@@ -129,7 +134,9 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
                    fields: Mapping[str, Field], model: Callable[[str, int], str],
                    annotators: int = 3, *, retries: int = 0, extra_votes: int = 0,
                    disagreement: Callable[[Result], bool] | None = None,
-                   seed: int = 0, on_ballot: Callable[[Ballot], None] | None = None):
+                   seed: int = 0, on_ballot: Callable[[Ballot], None] | None = None,
+                   prompt_builder: Callable[[Record, Mapping[str, Field]], str] | None = None,
+                   output_format: str = "nested"):
     """Yield results, retaining exact attempts and vote provenance.
 
     A disagreement callback can request a bounded additional vote by returning
@@ -137,6 +144,9 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
     fields remain frozen with their original denominator and provenance.
     Retries apply only to exceptions or wholly invalid outputs; partially valid
     ballots stand as observed. No prior answer is included in any invocation.
+    prompt_builder overrides the entire prompt. With output_format='flat',
+    explicit null means absence and a missing field remains invalid; raw model
+    output is preserved while valid values use the internal voting structure.
     """
     for name, value, minimum in (("annotators", annotators, 1), ("retries", retries, 0),
                                   ("extra_votes", extra_votes, 0), ("seed", seed, 0)):
@@ -145,6 +155,8 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
     if not fields or any(not isinstance(k, str) or not k for k in fields):
         raise ValueError("Nonempty named fields are required")
     fields = dict(fields)
+    if output_format not in ("nested", "flat"):
+        raise ValueError("output_format must be nested or flat")
     seen = set()
     for record_index, record in enumerate(records(source)):
         if not isinstance(record, Record) or not isinstance(record.id, str) or not record.id or not isinstance(record.text, str):
@@ -152,7 +164,7 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
         if record.id in seen:
             raise ValueError("Duplicate record ID: " + record.id)
         seen.add(record.id)
-        prompt, ballots, frozen = _prompt(record, fields), [], {}
+        prompt, ballots, frozen = (prompt_builder or _prompt)(record, fields), [], {}
         for voter in range(annotators + extra_votes):
             if voter >= annotators:
                 result = deepcopy(Result(record.id, decisions, tuple(ballots)))
@@ -166,7 +178,7 @@ def run_annotation(source: Any, records: Callable[[Any], Iterable[Record]],
                     raw = model(prompt, ballot_seed)
                     if not isinstance(raw, str):
                         raise ValueError("Adapter must return a JSON string")
-                    answers, invalid = _parse(raw, fields)
+                    answers, invalid = _parse(raw, fields, output_format)
                 except Exception as exc:
                     raw = getattr(exc, "raw", raw)
                     error = f"{type(exc).__name__}: {exc}"

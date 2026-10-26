@@ -12,7 +12,7 @@ import threading
 import time
 from local_annotator import Record, run_annotation
 from local_annotator.http import LocalChat
-from .tasks import TASKS, VERSION
+from .tasks import TASKS, VERSION, SCHEMAS, prompt_builder
 from .common import write_json
 
 
@@ -25,10 +25,11 @@ def run(root, model, *, workers=8):
     if db.execute("SELECT 1 FROM attempts WHERE model=? LIMIT 1", (model,)).fetchone():
         raise RuntimeError("Existing model results: use a fresh run directory, never silently resume")
     lock = threading.Lock()
-    adapter = LocalChat("http://127.0.0.1:8091/v1", model)
+    adapter = None
     metrics = []
     try:
         for task, fields in TASKS.items():
+            adapter = LocalChat("http://127.0.0.1:8091/v1", model, schema=SCHEMAS[task])
             data = [json.loads(line) for line in (root / (task + ".jsonl")).read_text(encoding="utf-8").splitlines()]
             for repeat in (0, 1):
                 selected = data if repeat == 0 else data[:200]
@@ -41,7 +42,8 @@ def run(root, model, *, workers=8):
                             db.execute("INSERT INTO attempts VALUES (?,?,?,?,?,?,?)", (model,task,repeat,record.id,ballot.voter,ballot.attempt,json.dumps(asdict(ballot))))
                             db.commit()
                     result = next(run_annotation(None, lambda _: [record], fields, adapter,
-                                                 annotators=5, seed=seed, on_ballot=save))
+                                                 annotators=5, seed=seed, on_ballot=save,
+                                                 prompt_builder=prompt_builder(task), output_format="flat"))
                     with lock:
                         db.execute("INSERT INTO records VALUES (?,?,?,?,?)", (model,task,repeat,record.id,json.dumps(asdict(result))))
                         db.commit()
@@ -72,11 +74,13 @@ def run(root, model, *, workers=8):
                           "completed": completed, "seconds": time.perf_counter()-started,
                           "workers": workers, "aborted": aborted, "task_version": VERSION,
                           "ballots_per_record": 5, "temperature": 0.7, "max_output_tokens": 192,
+                          "structured_output": "json_schema", "output_format": "flat",
                           "timing": "warm model; includes generation, validation, and synchronous durable writes"}
                 metrics.append(metric)
                 write_json(root / (model + "-timing.json"), metrics)
                 if aborted:
                     raise RuntimeError(aborted)
     finally:
-        adapter.close()
+        if adapter is not None:
+            adapter.close()
         db.close()

@@ -1,23 +1,42 @@
+"""User-approved prompts. No additional instructions are prepended or appended."""
 from local_annotator import Field
 
-VERSION = "independent-ballots-v2"
-TASKS = {
-    "age": {"age": Field(
-        "Extract only an explicitly stated CURRENT age of the comment author, in whole years. "
-        "First-person age statements and self-identifying 25M, F/25, or 25-year-old count. "
-        "Do not infer from dates, school, birth years, future birthdays, former ages, "
-        "hypotheticals, quotations, or another person's age. Return not_found when no "
-        "unambiguous current author age is explicit or current ages conflict.", "integer")},
-    "appeal": {"appeal": Field(
-        "Classify the predominant persuasive appeal of the author's own argument. "
-        "logos: reasons, evidence, definitions, comparisons, or logical/causal inference; "
-        "judge attempted reasoning, not truth. ethos: credibility, expertise, experience, "
-        "trustworthiness, or character of the speaker or a cited source; 'I' alone is not ethos. "
-        "pathos: emotions, suffering, fear, shame, sympathy, identity, or emotionally charged values; "
-        "ethics alone is not pathos. Choose the appeal doing most persuasive work. "
-        "mixed: multiple substantial appeals with none predominant. Return not_found for "
-        "no discernible argument, neutral questions, greetings, bare reports, or fragments. "
-        "Rhetorical questions can argue. Count quotations only when the author endorses or "
-        "uses them to persuade. Do not invent parent context.",
-        allowed=("ethos", "pathos", "logos", "mixed"))},
+VERSION = "short-prompts-v3"
+PROMPTS = {
+    "age": '''What age does the author state they are in this comment?
+If no age is stated, return null.
+
+Return JSON: {"age": <integer or null>}
+
+Comment:
+<COMMENT TEXT>''',
+    "appeal": '''What is the main rhetorical appeal of this comment?
+
+- ethos: credibility or authority
+- pathos: emotion
+- logos: reasoning or evidence
+
+If there is no main appeal, return null.
+
+Return JSON: {"appeal": <"ethos", "pathos", "logos", or null>}
+
+Comment:
+<COMMENT TEXT>''',
 }
+TASKS = {
+    "age": {"age": Field("Author age", "integer")},
+    "appeal": {"appeal": Field("Main rhetorical appeal", allowed=("ethos", "pathos", "logos"))},
+}
+SCHEMAS = {
+    "age": {"type": "object", "properties": {"age": {"type": ["integer", "null"]}},
+            "required": ["age"], "additionalProperties": False},
+    "appeal": {"type": "object", "properties": {"appeal": {"type": ["string", "null"],
+               "enum": ["ethos", "pathos", "logos", None]}},
+               "required": ["appeal"], "additionalProperties": False},
+}
+
+
+def prompt_builder(task):
+    def build(record, fields):
+        return PROMPTS[task].replace("<COMMENT TEXT>", record.text)
+    return build

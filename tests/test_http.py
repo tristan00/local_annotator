@@ -23,7 +23,8 @@ class AdapterTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1",0),Handler)
         thread = threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
-        adapter=LocalChat(f"http://127.0.0.1:{server.server_port}/v1","test")
+        schema={"type":"object","properties":{"age":{"type":["integer","null"]}},"required":["age"],"additionalProperties":False}
+        adapter=LocalChat(f"http://127.0.0.1:{server.server_port}/v1","test",schema=schema)
         try:
             self.assertEqual(adapter("one",1),"{}")
             self.assertEqual(adapter("two",2),"{}")
@@ -34,6 +35,8 @@ class AdapterTests(unittest.TestCase):
             self.assertNotEqual(peers[2],peers[3])
             self.assertEqual(len(requests[1]["messages"]),1)
             self.assertEqual(requests[1]["messages"][0]["content"],"two")
+            self.assertEqual(requests[1]["response_format"]["type"],"json_schema")
+            self.assertEqual(requests[1]["response_format"]["json_schema"]["schema"],schema)
         finally:
             adapter.close()
             server.shutdown()

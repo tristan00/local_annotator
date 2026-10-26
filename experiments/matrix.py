@@ -21,7 +21,7 @@ from local_annotator import Record, run_annotation
 from local_annotator.http import LocalChat
 from .benchmark import run
 from .common import artifact_root, write_json
-from .tasks import TASKS
+from .tasks import TASKS, PROMPTS, SCHEMAS, VERSION, prompt_builder
 
 MODELS = ["qwen3-0.6b", "smollm2-1.7b", "phi4-mini", "granite33-2b", "olmo2-1b",
           "mistral7b", "qwen25-1.5b", "qwen3-1.7b", "qwen36-nvfp4", "qwen38-27b-nvfp4"]
@@ -50,6 +50,8 @@ def main():
     if (root / "matrix-status.json").exists():
         raise FileExistsError("Use a fresh output directory; refusing to overwrite a previous matrix")
     write_json(root / "planned-models.json", args.models)
+    write_json(root / "prompts.json", {"version": VERSION, "templates": PROMPTS, "schemas": SCHEMAS,
+                                      "messages": "one user message; no system message", "output_format": "flat"})
     source = Path(__file__).resolve().parents[1]
     write_json(root / "source-hashes.json", {str(p.relative_to(source)): hashlib.sha256(p.read_bytes()).hexdigest()
                for directory in (source / "local_annotator", source / "experiments") for p in directory.glob("*.py")})
@@ -99,15 +101,18 @@ def main():
             else:
                 raise TimeoutError("Server startup exceeded 10 minutes")
             meta["cold_start_seconds"] = time.time() - meta["started"]
-            adapter = LocalChat("http://127.0.0.1:8091/v1", name)
-            try:
-                preflight = next(run_annotation(None, lambda _: [Record("synthetic-preflight", "I am 25 years old.")],
-                                               TASKS["age"], adapter, annotators=3, seed=42))
-            finally:
-                adapter.close()
-            write_json(root / (name + "-preflight.json"), asdict(preflight))
-            if not any(b.raw is not None for b in preflight.ballots):
-                raise RuntimeError("Inference preflight completed no generation requests")
+            for task, text in (("age", "I am 25 years old."),
+                               ("appeal", "The proposal costs less, so it saves money.")):
+                adapter = LocalChat("http://127.0.0.1:8091/v1", name, schema=SCHEMAS[task])
+                try:
+                    preflight = next(run_annotation(None, lambda _: [Record("synthetic-preflight", text)],
+                        TASKS[task], adapter, annotators=3, seed=42,
+                        prompt_builder=prompt_builder(task), output_format="flat"))
+                finally:
+                    adapter.close()
+                write_json(root / (name + "-" + task + "-preflight.json"), asdict(preflight))
+                if not all(task in b.answers and b.error is None for b in preflight.ballots):
+                    raise RuntimeError(f"Structured-output preflight failed for {task}; see saved ballots")
             meta["status"] = "benchmarking"
             write_json(root / "matrix-status.json", status)
             run(root, name)
