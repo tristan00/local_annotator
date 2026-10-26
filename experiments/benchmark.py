@@ -1,7 +1,7 @@
 """Measure identical nested 1/3/5 ballot panels; independently repeat 200 records.
 
 The smaller panels are prefixes of five ballots, NOT separate timing runs.
-Only full five-ballot panel throughput is measured. No agreement is accuracy.
+Only full five-ballot panel throughput is measured.
 """
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict
