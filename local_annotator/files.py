@@ -63,3 +63,42 @@ def annotate_jsonl(records, out, fields, model, prompt_builder, *, workers, seco
     print(f"exit {out} {dict(counts)} voters={dict(sorted(voters.items()))} remaining={len(todo) - counts['records']} "
           f"seconds={elapsed:.0f} rate={counts['records'] / max(elapsed, 1e-9):.1f}/s", flush=True)
     return counts
+
+
+class Replay:
+    def __init__(self, ballots):
+        self.ballots = ballots
+
+    def __call__(self, prompt, seed):
+        raw, error = self.ballots[prompt]
+        if error:
+            failure = ValueError(error.partition(": ")[2])
+            failure.raw = raw
+            raise failure
+        return raw
+
+
+def tiebreak_jsonl(records, voted, out, fields, tiebreaker, prompt_builder, *, workers, seconds, output_format="lines",
+                   report_every=5000, seed=0):
+    started = time.perf_counter()
+    out = Path(out)
+    records = {record.id: record for record in records}
+    rows = [json.loads(line) for line in Path(voted).open(encoding="utf-8")]
+    voters = 1 + max(ballot["voter"] for row in rows for ballot in row["ballots"])
+    pending = [row for row in rows if row["unresolved"]]
+    if not out.exists():
+        with out.open("w", encoding="utf-8") as stream:
+            for row in rows:
+                if not row["unresolved"]:
+                    stream.write(json.dumps(row, ensure_ascii=False) + "\n")
+    replays = [{} for _ in range(voters)]
+    for row in pending:
+        prompt = prompt_builder(records[row["id"]], fields)
+        for ballot in row["ballots"]:
+            replays[ballot["voter"]][prompt] = (ballot["raw"], ballot["error"])
+    print(f"enter tiebreak {out} records={len(rows)} pending={len(pending)} voters={voters}", flush=True)
+    counts = annotate_jsonl([records[row["id"]] for row in pending], out, fields, [Replay(replay) for replay in replays] + [tiebreaker],
+                            prompt_builder, workers=workers, seconds=seconds, output_format=output_format, annotators=voters,
+                            extra_votes=1, resume=True, report_every=report_every, seed=seed)
+    print(f"exit tiebreak {out} pending={len(pending)} seconds={time.perf_counter() - started:.0f}", flush=True)
+    return counts
