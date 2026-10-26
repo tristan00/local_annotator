@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 *.md
+!README.md
 *.sqlite*
 *.jsonl
 *.log
