@@ -12,9 +12,9 @@ SOURCE = Path(__file__).resolve().with_name("vllm_serve.sh")
 SCRIPT = f"/mnt/{SOURCE.drive[0].lower()}{SOURCE.as_posix()[2:]}"
 
 
-def wsl(command, **kwargs):
-    return subprocess.run(["wsl", "-d", DISTRO, "-u", "root", "--", "bash", "-c", command], stdin=subprocess.DEVNULL,
-                          capture_output=True, encoding="utf-8", errors="replace", **kwargs)
+def wsl(script, **kwargs):
+    return subprocess.run(["wsl", "-d", DISTRO, "-u", "root", "--", "bash", "-s"], input=script, capture_output=True,
+                          encoding="utf-8", errors="replace", **kwargs)
 
 
 def pattern(name):
@@ -43,12 +43,16 @@ def start(name, port, gpu_memory_utilization, max_num_seqs=256, max_model_len=81
     raise TimeoutError(f"{name} server not ready after {startup_seconds}s:\n{wsl(f'tail -40 {log}').stdout}")
 
 
-def stop(*names):
+def stop(*names, grace_seconds=60):
     started = time.perf_counter()
     for name in names:
-        wsl(f"pkill -f '{pattern(name)}'")
-    while any(wsl(f"pgrep -f '{pattern(name)}'").returncode == 0 for name in names):
-        time.sleep(1)
+        result = wsl("tree() { echo $1; for child in $(pgrep -P $1); do tree $child; done; }; "
+                     f"roots=$(pgrep -f '{pattern(name)}'); pids=$(for root in $roots; do tree $root; done); "
+                     "[ -z \"$pids\" ] && exit 0; kill $roots; "
+                     f"for second in $(seq {grace_seconds}); do live=$(for pid in $pids; do kill -0 $pid 2>/dev/null && echo $pid; done); "
+                     "[ -z \"$live\" ] && exit 0; sleep 1; done; echo killed $live; kill -9 $live")
+        if result.stdout.strip():
+            print(f"stop {name} ignored SIGTERM for {grace_seconds}s: {result.stdout.strip()}", flush=True)
     print(f"exit stop {' '.join(names)} seconds={time.perf_counter() - started:.0f}", flush=True)
 
 
